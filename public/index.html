@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Go WebSocket Channel Demo</title>
+</head>
+<body>
+  <h2>WebSocket Channel Pub/Sub</h2>
+  
+  <div>
+    <button onclick="subscribe('notifications')">Subscribe to "notifications"</button>
+    <button onclick="subscribe('chat')">Subscribe to "chat"</button>
+  </div>
+  
+  <br/>
+  
+  <div>
+    <input type="text" id="msgInput" placeholder="Message content" />
+    <button onclick="publish('notifications')">Send to "notifications"</button>
+    <button onclick="publish('chat')">Send to "chat"</button>
+  </div>
+
+  <h3>Received Messages:</h3>
+  <ul id="log"></ul>
+
+  <script>
+    const socket = new WebSocket('ws://localhost:8080/ws');
+
+    socket.onopen = () => {
+      console.log('Connected to WebSocket server');
+    };
+
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+      const li = document.createElement('li');
+      li.textContent = `[Channel: ${msg.channel}] ${msg.data}`;
+      document.getElementById('log').appendChild(li);
+    };
+
+    function subscribe(channelName) {
+      const payload = {
+        action: 'subscribe',
+        channel: channelName
+      };
+      socket.send(JSON.stringify(payload));
+    }
+
+    function publish(channelName) {
+      const text = document.getElementById('msgInput').value;
+      const payload = {
+        action: 'publish',
+        channel: channelName,
+        payload: text
+      };
+      socket.send(JSON.stringify(payload));
+    }
+  </script>
+</body>
+</html>
