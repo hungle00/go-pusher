@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Pusher-style client</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 32px; }
+    .row { margin-bottom: 16px; }
+    input, button, textarea { padding: 8px 10px; }
+    textarea { width: 100%; max-width: 720px; min-height: 100px; }
+    pre { background: #f4f4f4; padding: 12px; border-radius: 6px; white-space: pre-wrap; }
+    label { display: block; margin: 8px 0 4px; }
+    .panel { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin-top: 16px; }
+    .status { margin: 12px 0; color: #333; }
+  </style>
+</head>
+<body>
+  <h2>Pusher-style client</h2>
+  <p>This page only subscribes and listens for events. App registration happens on the Go service.</p>
+
+  <div class="panel">
+    <div class="row">
+      <label for="channel">Channel</label>
+      <input id="channel" type="text" placeholder="notifications" value="notifications" />
+    </div>
+    <div class="row">
+      <button id="connectBtn" type="button">Connect & subscribe</button>
+      <button id="disconnectBtn" type="button">Disconnect</button>
+    </div>
+    <div id="status" class="status">{{ initial_status }}</div>
+  </div>
+
+  <div class="panel">
+    <div class="row">
+      <label for="eventName">Event name</label>
+      <input id="eventName" type="text" value="message" />
+    </div>
+    <div class="row">
+      <label for="eventPayload">Payload JSON</label>
+      <textarea id="eventPayload">{"text":"Hello from Flask client!"}</textarea>
+    </div>
+    <button id="publishBtn" type="button">Publish message</button>
+  </div>
+
+  <div class="panel">
+    <h3>Messages received</h3>
+    <pre id="messages">Waiting for events...</pre>
+  </div>
+
+  <script>
+    const appId = {{ app_id|tojson }};
+    const appKey = {{ app_key|tojson }};
+    const goBaseUrl = {{ go_base_url|tojson }};
+    const channelEl = document.getElementById('channel');
+    const eventNameEl = document.getElementById('eventName');
+    const eventPayloadEl = document.getElementById('eventPayload');
+    const statusEl = document.getElementById('status');
+    const messagesEl = document.getElementById('messages');
+    const connectBtn = document.getElementById('connectBtn');
+    const disconnectBtn = document.getElementById('disconnectBtn');
+    const publishBtn = document.getElementById('publishBtn');
+
+    let socket = null;
+
+    function appendMessage(text) {
+      const existing = messagesEl.textContent === 'Waiting for events...' ? '' : messagesEl.textContent + '\n';
+      messagesEl.textContent = existing + text;
+    }
+
+    function getCurrentChannel() {
+      return channelEl.value.trim();
+    }
+
+    function createSocket() {
+      if (!appId) {
+        statusEl.textContent = 'Missing required Flask setting: APP_ID.';
+        return null;
+      }
+      if (!appKey) {
+        statusEl.textContent = 'Missing required Flask setting: APP_KEY.';
+        return null;
+      }
+
+      const wsBaseUrl = new URL(goBaseUrl);
+      wsBaseUrl.protocol = wsBaseUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${wsBaseUrl.origin}/apps/${encodeURIComponent(appId)}/ws?key=${encodeURIComponent(appKey)}`;
+      const ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        statusEl.textContent = 'Connected to Go websocket.';
+        if (getCurrentChannel()) {
+          ws.send(JSON.stringify({ action: 'subscribe', channel: getCurrentChannel() }));
+          appendMessage(`Subscribed to ${getCurrentChannel()}`);
+        }
+      };
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        appendMessage(JSON.stringify(msg, null, 2));
+      };
+
+      ws.onerror = () => {
+        statusEl.textContent = 'Websocket connection error. Check App ID, App key, and Go server status.';
+      };
+
+      ws.onclose = () => {
+        statusEl.textContent = 'Disconnected from websocket.';
+      };
+
+      return ws;
+    }
+
+    connectBtn.addEventListener('click', () => {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.close();
+      }
+      socket = createSocket();
+    });
+
+    disconnectBtn.addEventListener('click', () => {
+      if (socket) {
+        socket.close();
+        socket = null;
+      }
+      statusEl.textContent = 'Disconnected.';
+    });
+
+    publishBtn.addEventListener('click', async () => {
+      const channel = getCurrentChannel();
+      const eventName = eventNameEl.value.trim() || 'message';
+      let payload = {};
+
+      if (!appId) {
+        statusEl.textContent = 'Missing required Flask setting: APP_ID.';
+        return;
+      }
+      if (!channel) {
+        statusEl.textContent = 'Channel is required for publish.';
+        return;
+      }
+
+      try {
+        payload = JSON.parse(eventPayloadEl.value || '{}');
+      } catch (error) {
+        statusEl.textContent = 'Payload must be valid JSON.';
+        return;
+      }
+
+      statusEl.textContent = 'Publishing event...';
+
+      try {
+        const response = await fetch('/api/events', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            channel,
+            event: eventName,
+            payload
+          })
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || 'Publish failed');
+        }
+
+        statusEl.textContent = 'Event published successfully.';
+        appendMessage(`Published to ${channel}: ${JSON.stringify({ event: eventName, payload }, null, 2)}`);
+      } catch (error) {
+        statusEl.textContent = error.message;
+      }
+    });
+  </script>
+</body>
+</html>

@@ -2,75 +2,89 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Go Pusher Demo</title>
+  <title>Register Pusher App</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 32px; }
+    .row { margin-bottom: 16px; }
+    input, button { padding: 8px 10px; }
+    pre { background: #f4f4f4; padding: 12px; border-radius: 6px; }
+    label { display: block; margin: 8px 0 4px; }
+  </style>
 </head>
 <body>
-  <h2>App Channel Subscriptions</h2>
+  <h2>Register a Pusher-style app</h2>
 
-  <div>
-    <input type="text" id="appId" placeholder="App ID" />
-    <input type="text" id="appKey" placeholder="App key" />
-    <button onclick="connect()">Connect</button>
+  <form id="registerForm">
+    <div class="row">
+      <label for="appName">App name</label>
+      <input id="appName" type="text" placeholder="e.g. my-flask-client" required />
+      <button type="submit">Register app</button>
+    </div>
+  </form>
+
+  <div id="status"></div>
+
+  <div id="credentials" style="display:none; margin-top:24px;">
+    <h3>App credentials</h3>
+    <div class="row">
+      <label for="appId">App ID</label>
+      <input id="appId" type="text" readonly />
+    </div>
+    <div class="row">
+      <label for="appKey">App key</label>
+      <input id="appKey" type="text" readonly />
+    </div>
+    <div class="row">
+      <label for="appSecret">App secret</label>
+      <input id="appSecret" type="text" readonly />
+    </div>
+
+    <p>Use these values in your Flask client:</p>
+    <pre id="envBlock"></pre>
   </div>
-
-  <div>
-    <button onclick="subscribe('notifications')">Subscribe to "notifications"</button>
-    <button onclick="subscribe('chat')">Subscribe to "chat"</button>
-  </div>
-
-  <br/>
-
-  <h3>Received Messages:</h3>
-  <ul id="log"></ul>
 
   <script>
-    let socket;
+    const form = document.getElementById('registerForm');
+    const statusBox = document.getElementById('status');
+    const credentialsBox = document.getElementById('credentials');
 
-    function connect() {
-      const appIdInput = document.getElementById('appId');
-      const appKeyInput = document.getElementById('appKey');
-      const appId = appIdInput.value.trim();
-      const appKey = appKeyInput.value.trim();
-
-      if (!appId || !appKey) {
-        alert('Bạn cần nhập App ID và App key trước khi Connect');
+    form.addEventListener('submit', async function (event) {
+      event.preventDefault();
+      const name = document.getElementById('appName').value.trim();
+      if (!name) {
+        statusBox.textContent = 'Please enter an app name.';
         return;
       }
 
-      if (socket) socket.close();
-      socket = new WebSocket(`ws://${location.host}/apps/${encodeURIComponent(appId)}/ws?key=${encodeURIComponent(appKey)}`);
-      socket.onopen = () => console.log('Connected to app');
-      socket.onmessage = handleMessage;
-      socket.onerror = () => console.log('WebSocket error: check App ID / App key and server status');
-      socket.onclose = (event) => console.log('Disconnected', event.code, event.reason || '');
-    }
+      statusBox.textContent = 'Registering app...';
 
-    function handleMessage(event) {
-      let msg;
       try {
-        msg = JSON.parse(event.data);
-      } catch (err) {
-        msg = { channel: 'unknown', event: 'message', data: event.data };
+        const res = await fetch('/apps', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name })
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed to create app');
+        }
+
+        document.getElementById('appId').value = data.id;
+        document.getElementById('appKey').value = data.key;
+        document.getElementById('appSecret').value = data.secret;
+        document.getElementById('envBlock').textContent = [
+          `APP_ID=${data.id}`,
+          `APP_KEY=${data.key}`,
+          `APP_SECRET=${data.secret}`
+        ].join('\n');
+
+        credentialsBox.style.display = 'block';
+        statusBox.textContent = 'App registered successfully.';
+      } catch (error) {
+        statusBox.textContent = error.message;
       }
-
-      const channel = msg.channel || 'unknown';
-      const eventName = msg.event || 'message';
-      const payload = msg.data ?? null;
-      const value = typeof payload === 'string' ? payload : JSON.stringify(payload);
-
-      const li = document.createElement('li');
-      li.textContent = `[${channel}] ${eventName}: ${value}`;
-      document.getElementById('log').appendChild(li);
-    }
-
-    function subscribe(channelName) {
-      if (!socket || socket.readyState !== WebSocket.OPEN) {
-        console.log('Not connected yet. Please click Connect first.');
-        return;
-      }
-      socket.send(JSON.stringify({ action: 'subscribe', channel: channelName }));
-      console.log(`Subscribed to ${channelName}`);
-    }
+    });
   </script>
 </body>
 </html>
