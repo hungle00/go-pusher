@@ -1,45 +1,44 @@
-## Go Pusher
+# Go Pusher
 
-A small Pusher-style service. App records persist in SQLite at
-`data/pusher.db` by default. Set `PUSHER_DB_PATH` to use another file path.
-Only a hash of each app secret is stored; the generated secret is returned once when the app is created.
+A small **Pusher-style** service built with Go, WebSockets, and SQLite. The Go
+service registers apps and routes events by app and channel. A Flask client
+demonstrates publishing and subscribing with a registered app.
 
-Run the Go service:
+## Run Go
 
 ```sh
 go run .
 ```
 
-Keep the SQLite database file and its backups private. The default `data/`
-directory is excluded from Git.
+Open <http://localhost:8080> and register an app. Keep its credentials private.
 
-### App registration flow
-With the Go service running, open `http://localhost:8080` and register an app.
-The Go page returns the app ID, public key, and secret. Keep the secret private;
-it is stored as a hash and cannot be retrieved from SQLite later.
+App records are stored in `data/pusher.db` by default; set `PUSHER_DB_PATH` to
+change the location. **Keep this database and its backups private.** The current
+registry stores the app secret in the database as well as its hash, so treat the
+database as sensitive. The `data/` directory is excluded from Git.
 
-Example output:
+## Run with Docker
 
-```text
-APP_ID=app_xxx
-APP_KEY=key_xxx
-APP_SECRET=secret_xxx
+Build and run the Go service with a persistent volume for its SQLite database:
+
+```sh
+docker build -t go-pusher .
+docker run --rm -p 8080:8080 -v go-pusher-data:/data go-pusher
 ```
 
-### Flask client
-The Flask client lives under `clients/flask_app`. Its page uses the configured
-app ID and key to subscribe to a channel, listen for messages, and publish events.
-The app secret stays on the Flask server and is never sent to the browser.
+Open <http://localhost:8080>. The Flask client is not included in the image.
 
-In a second terminal, create a local environment file from the example and fill
-in the credentials returned by Go:
+## Run Flask Client
+
+In a second terminal, set up the client's environment:
 
 ```sh
 cd clients/flask_app
 cp .env.example .env
 ```
 
-Edit `.env`, then install dependencies and start Flask:
+Put the credentials from the Go registration page in `.env`. Then install and
+run Flask:
 
 ```sh
 python3 -m pip install flask requests
@@ -49,24 +48,22 @@ set +a
 python3 app.py
 ```
 
-Open `http://localhost:5000`, enter a channel, and connect to subscribe. The
-same page can publish an event. Alternatively, publish over HTTP:
+Open <http://localhost:5000> to **subscribe**, **listen**, and **publish**. The
+`APP_SECRET` is used by Flask on the server and is not sent to the browser.
 
-```bash
+To publish with HTTP instead of the page:
+
+```sh
 curl -X POST http://localhost:5000/api/events \
   -H "Content-Type: application/json" \
-  -d '{
-    "channel": "notifications",
-    "event": "message",
-    "payload": {"text": "Hello from Flask!"}
-  }'
+  -d '{"channel":"notifications","event":"message","payload":{"text":"Hello!"}}'
 ```
 
-The Go service exposes:
+## API
 
-- `POST /apps` with `{ "name": "My App" }`
-- `POST /apps/{app_id}/events` with bearer secret and JSON body:
-  `{ "event": "message", "topic": "notifications", "payload": { ... } }`
-- `GET /apps/{app_id}/ws?key={app_key}` for websocket subscriptions
+- `POST /apps` registers an app: `{ "name": "My App" }`.
+- `POST /apps/{app_id}/events` publishes an event. Flask sends the app secret
+  as a bearer credential; the JSON body contains `event`, `topic`, and `payload`.
+- `GET /apps/{app_id}/ws?key={app_key}` opens an app's WebSocket connection.
 
-This is closer to the real Pusher model: the app is created once by the server/admin layer, and clients reuse that registered app instead of creating arbitrary apps in the browser.
+**Private-channel authorization is not implemented yet.**
