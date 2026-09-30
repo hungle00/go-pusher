@@ -2,57 +2,74 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Go WebSocket Channel Demo</title>
+  <title>Go Pusher Demo</title>
 </head>
 <body>
-  <h2>WebSocket Channel Pub/Sub</h2>
-  
+  <h2>App Channel Subscriptions</h2>
+
+  <div>
+    <input type="text" id="appId" placeholder="App ID" />
+    <input type="text" id="appKey" placeholder="App key" />
+    <button onclick="connect()">Connect</button>
+  </div>
+
   <div>
     <button onclick="subscribe('notifications')">Subscribe to "notifications"</button>
     <button onclick="subscribe('chat')">Subscribe to "chat"</button>
   </div>
-  
+
   <br/>
-  
-  <div>
-    <input type="text" id="msgInput" placeholder="Message content" />
-    <button onclick="publish('notifications')">Send to "notifications"</button>
-    <button onclick="publish('chat')">Send to "chat"</button>
-  </div>
 
   <h3>Received Messages:</h3>
   <ul id="log"></ul>
 
   <script>
-    const socket = new WebSocket('ws://localhost:8080/ws');
+    let socket;
 
-    socket.onopen = () => {
-      console.log('Connected to WebSocket server');
-    };
+    function connect() {
+      const appIdInput = document.getElementById('appId');
+      const appKeyInput = document.getElementById('appKey');
+      const appId = appIdInput.value.trim();
+      const appKey = appKeyInput.value.trim();
 
-    socket.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-      const li = document.createElement('li');
-      li.textContent = `[Channel: ${msg.channel}] ${msg.data}`;
-      document.getElementById('log').appendChild(li);
-    };
+      if (!appId || !appKey) {
+        alert('Bạn cần nhập App ID và App key trước khi Connect');
+        return;
+      }
 
-    function subscribe(channelName) {
-      const payload = {
-        action: 'subscribe',
-        channel: channelName
-      };
-      socket.send(JSON.stringify(payload));
+      if (socket) socket.close();
+      socket = new WebSocket(`ws://${location.host}/apps/${encodeURIComponent(appId)}/ws?key=${encodeURIComponent(appKey)}`);
+      socket.onopen = () => console.log('Connected to app');
+      socket.onmessage = handleMessage;
+      socket.onerror = () => console.log('WebSocket error: check App ID / App key and server status');
+      socket.onclose = (event) => console.log('Disconnected', event.code, event.reason || '');
     }
 
-    function publish(channelName) {
-      const text = document.getElementById('msgInput').value;
-      const payload = {
-        action: 'publish',
-        channel: channelName,
-        payload: text
-      };
-      socket.send(JSON.stringify(payload));
+    function handleMessage(event) {
+      let msg;
+      try {
+        msg = JSON.parse(event.data);
+      } catch (err) {
+        msg = { channel: 'unknown', event: 'message', data: event.data };
+      }
+
+      const channel = msg.channel || 'unknown';
+      const eventName = msg.event || 'message';
+      const payload = msg.data ?? null;
+      const value = typeof payload === 'string' ? payload : JSON.stringify(payload);
+
+      const li = document.createElement('li');
+      li.textContent = `[${channel}] ${eventName}: ${value}`;
+      document.getElementById('log').appendChild(li);
+    }
+
+    function subscribe(channelName) {
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        console.log('Not connected yet. Please click Connect first.');
+        return;
+      }
+      socket.send(JSON.stringify({ action: 'subscribe', channel: channelName }));
+      console.log(`Subscribed to ${channelName}`);
     }
   </script>
 </body>

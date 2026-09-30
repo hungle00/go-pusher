@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 
@@ -10,12 +11,12 @@ import (
 type commandMessage struct {
 	Action  string `json:"action"`
 	Channel string `json:"channel"`
-	Payload string `json:"payload"`
 }
 
 type broadcastMessage struct {
-	Channel string `json:"channel"`
-	Data    string `json:"data"`
+	Channel string          `json:"channel"`
+	Event   string          `json:"event"`
+	Data    json.RawMessage `json:"data"`
 }
 
 type client struct {
@@ -25,13 +26,19 @@ type client struct {
 
 type subscription struct {
 	client  *client
+	appID   string
+	channel string
+}
+
+type channelKey struct {
+	appID   string
 	channel string
 }
 
 type Hub struct {
 	clients    map[*client]bool
-	channels   map[string]map[*client]bool
-	broadcast  chan broadcastMessage
+	channels   map[channelKey]map[*client]bool
+	broadcast  chan broadcastEnvelope
 	register   chan *client
 	unregister chan *client
 	subscribe  chan subscription
@@ -40,8 +47,8 @@ type Hub struct {
 func NewHub() *Hub {
 	return &Hub{
 		clients:    make(map[*client]bool),
-		channels:   make(map[string]map[*client]bool),
-		broadcast:  make(chan broadcastMessage),
+		channels:   make(map[channelKey]map[*client]bool),
+		broadcast:  make(chan broadcastEnvelope),
 		register:   make(chan *client),
 		unregister: make(chan *client),
 		subscribe:  make(chan subscription),
@@ -61,16 +68,17 @@ func (h *Hub) Run() {
 			if !h.clients[request.client] {
 				continue
 			}
-			if h.channels[request.channel] == nil {
-				h.channels[request.channel] = make(map[*client]bool)
+			key := channelKey{appID: request.appID, channel: request.channel}
+			if h.channels[key] == nil {
+				h.channels[key] = make(map[*client]bool)
 			}
-			h.channels[request.channel][request.client] = true
-			log.Printf("Client subscribed to channel: %s", request.channel)
+			h.channels[key][request.client] = true
+			log.Printf("Client subscribed to app %s channel %s", request.appID, request.channel)
 
 		case message := <-h.broadcast:
-			for subscriber := range h.channels[message.Channel] {
+			for subscriber := range h.channels[channelKey{appID: message.appID, channel: message.Channel}] {
 				select {
-				case subscriber.send <- message:
+				case subscriber.send <- message.broadcastMessage:
 				default:
 					h.removeClient(subscriber)
 				}
@@ -79,8 +87,13 @@ func (h *Hub) Run() {
 	}
 }
 
-func (h *Hub) Publish(channel, data string) {
-	h.broadcast <- broadcastMessage{Channel: channel, Data: data}
+func (h *Hub) Publish(appID, channel, event string, data json.RawMessage) {
+	h.broadcast <- broadcastEnvelope{appID: appID, broadcastMessage: broadcastMessage{Channel: channel, Event: event, Data: data}}
+}
+
+type broadcastEnvelope struct {
+	appID string
+	broadcastMessage
 }
 
 func (h *Hub) removeClient(client *client) {
@@ -101,7 +114,7 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h *Hub) ServeAppHTTP(appID string, w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println("Failed to set websocket upgrade:", err)
@@ -124,9 +137,9 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		switch command.Action {
 		case "subscribe":
-			h.subscribe <- subscription{client: client, channel: command.Channel}
-		case "publish":
-			h.Publish(command.Channel, command.Payload)
+			if command.Channel != "" {
+				h.subscribe <- subscription{client: client, appID: appID, channel: command.Channel}
+			}
 		}
 	}
 }
