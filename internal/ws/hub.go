@@ -7,8 +7,15 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
+)
+
+const (
+	maxWebSocketMessageBytes = 64 << 10
+	maxCommandsPerWindow     = 20
+	commandRateWindow        = time.Second
 )
 
 type commandMessage struct {
@@ -28,6 +35,23 @@ type client struct {
 	appID    string
 	socketID string
 	send     chan broadcastMessage
+}
+
+type commandRateLimiter struct {
+	windowStart time.Time
+	commandCount int
+}
+
+func (limiter *commandRateLimiter) allow(now time.Time) bool {
+	if limiter.windowStart.IsZero() || now.Sub(limiter.windowStart) >= commandRateWindow {
+		limiter.windowStart = now
+		limiter.commandCount = 0
+	}
+	if limiter.commandCount >= maxCommandsPerWindow {
+		return false
+	}
+	limiter.commandCount++
+	return true
 }
 
 type subscription struct {
@@ -152,6 +176,7 @@ func (h *Hub) ServeAppHTTP(appID string, w http.ResponseWriter, r *http.Request,
 	}
 
 	client := &client{conn: conn, appID: appID, socketID: randomSocketID(), send: make(chan broadcastMessage, 256)}
+	conn.SetReadLimit(maxWebSocketMessageBytes)
 	h.register <- client
 	if err := conn.WriteJSON(map[string]string{"event": "connected", "socket_id": client.socketID}); err != nil {
 		return
@@ -162,9 +187,18 @@ func (h *Hub) ServeAppHTTP(appID string, w http.ResponseWriter, r *http.Request,
 		conn.Close()
 	}()
 
+	var commandLimiter commandRateLimiter
 	for {
 		var command commandMessage
 		if err := conn.ReadJSON(&command); err != nil {
+			return
+		}
+		if !commandLimiter.allow(time.Now()) {
+			_ = conn.WriteControl(
+				websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "command rate limit exceeded"),
+				time.Now().Add(time.Second),
+			)
 			return
 		}
 

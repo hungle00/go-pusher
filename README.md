@@ -1,8 +1,9 @@
 # Go Pusher
 
-A small **Pusher-style** service built with Go, WebSockets, and SQLite. The Go
-service registers apps and routes events by app and channel. A Flask client
-demonstrates publishing and subscribing with a registered app.
+This project is a small vibe-code experiment: a lightweight **Pusher-style**
+service built with Go, WebSockets, and SQLite. The Go service registers apps and
+routes events by app and channel. A Flask client demonstrates publishing and
+subscribing with a registered app.
 
 ## Run Go
 
@@ -71,4 +72,6 @@ curl -X POST http://localhost:5000/api/events \
   Flask proves it knows the app secret and provides an active socket ID.
 
 See [docs/private-channel-auth.md](docs/private-channel-auth.md) for the private
-channel flow and implementation notes.
+channel flow and implementation notes. For app credentials, Flask usage,
+publishing, delivery behavior, and common errors, see
+[docs/app-and-event-behavior.md](docs/app-and-event-behavior.md).

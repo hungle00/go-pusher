@@ -11,6 +11,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const maxEventRequestBytes = 1 << 20
+
 type Publisher interface {
 	Publish(appID, channel, event string, data json.RawMessage)
 }
@@ -61,8 +63,14 @@ func (h *Handler) CreateApp(c *gin.Context) {
 }
 
 func (h *Handler) PublishEvent(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxEventRequestBytes)
 	var event eventPayload
 	if err := c.ShouldBindJSON(&event); err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "Request body is too large"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid payload format"})
 		return
 	}
