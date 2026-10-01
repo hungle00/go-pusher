@@ -1,5 +1,6 @@
 /data/
 clients/*/__pycache__
+clients/*/data/
 **/.env
 **/.env.*
 !**/.env.example

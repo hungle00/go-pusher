@@ -7,15 +7,14 @@ demonstrates publishing and subscribing with a registered app.
 ## Run Go
 
 ```sh
+export CHANNEL_AUTH_SIGNING_KEY="replace-with-a-long-random-signing-key"
 go run .
 ```
 
 Open <http://localhost:8080> and register an app. Keep its credentials private.
 
 App records are stored in `data/pusher.db` by default; set `PUSHER_DB_PATH` to
-change the location. **Keep this database and its backups private.** The current
-registry stores the app secret in the database as well as its hash, so treat the
-database as sensitive. The `data/` directory is excluded from Git.
+change the location. **Keep this database and its backups private.** 
 
 ## Run with Docker
 
@@ -48,8 +47,11 @@ set +a
 python3 app.py
 ```
 
-Open <http://localhost:5000> to **subscribe**, **listen**, and **publish**. The
-`APP_SECRET` is used by Flask on the server and is not sent to the browser.
+Open <http://localhost:5000> for **public channels**. Use the **Go to private
+channel** link to reach the login page, then Flask redirects authenticated users
+to the protected private-channel page. Flask stores users in its local SQLite
+database, checks the session, and asks Go for a short-lived authorization. The
+`APP_SECRET` is used server-to-server and is not sent to the browser.
 
 To publish with HTTP instead of the page:
 
@@ -65,5 +67,8 @@ curl -X POST http://localhost:5000/api/events \
 - `POST /apps/{app_id}/events` publishes an event. Flask sends the app secret
   as a bearer credential; the JSON body contains `event`, `topic`, and `payload`.
 - `GET /apps/{app_id}/ws?key={app_key}` opens an app's WebSocket connection.
+- `POST /apps/{app_id}/private-channel-auth` issues a short-lived grant after
+  Flask proves it knows the app secret and provides an active socket ID.
 
-**Private-channel authorization is not implemented yet.**
+See [docs/private-channel-auth.md](docs/private-channel-auth.md) for the private
+channel flow and implementation notes.

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Public channel</title>
+  <title>Private channel</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 32px; }
     .row { margin-bottom: 16px; }
@@ -15,16 +15,16 @@
   </style>
 </head>
 <body>
-  <h2>Public channel</h2>
-  <p>Test public publish and subscribe. App registration happens on the Go service.</p>
-  <p><a href="/private">Go to private channel</a></p>
+  <h2>Private channel</h2>
+  <p>Logged in as <strong>{{ username }}</strong>. <a href="/">Public channel</a></p>
+  <button id="logoutBtn" type="button">Logout</button>
 
   <div class="panel">
     <div class="row">
-      <label for="channel">Channel</label>
-      <input id="channel" type="text" value="notifications" />
+      <label for="channel">Private channel</label>
+      <input id="channel" type="text" value="private-orders" />
     </div>
-    <button id="connectBtn" type="button">Connect & subscribe</button>
+    <button id="connectBtn" type="button">Connect & authorize</button>
     <button id="disconnectBtn" type="button">Disconnect</button>
     <div id="status" class="status">{{ initial_status }}</div>
   </div>
@@ -33,7 +33,7 @@
     <label for="eventName">Event name</label>
     <input id="eventName" type="text" value="message" />
     <label for="eventPayload">Payload JSON</label>
-    <textarea id="eventPayload">{"text":"Hello from public channel!"}</textarea>
+    <textarea id="eventPayload">{"text":"Hello from private channel!"}</textarea>
     <button id="publishBtn" type="button">Publish message</button>
   </div>
 
@@ -46,28 +46,46 @@
     const appId = {{ app_id|tojson }};
     const appKey = {{ app_key|tojson }};
     const goBaseUrl = {{ go_base_url|tojson }};
+    const csrfToken = {{ csrf_token|tojson }};
     const channelEl = document.getElementById('channel');
     const statusEl = document.getElementById('status');
     const messagesEl = document.getElementById('messages');
     let socket = null;
+    let socketId = null;
 
     function appendMessage(text) {
       const existing = messagesEl.textContent === 'Waiting for events...' ? '' : messagesEl.textContent + '\n';
       messagesEl.textContent = existing + text;
     }
 
+    async function requestGrant() {
+      const response = await fetch('/api/private-channel-auth', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify({ socket_id: socketId, channel: channelEl.value.trim() })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Private-channel authorization failed');
+      return data.auth;
+    }
+
     function connect() {
+      const channel = channelEl.value.trim();
+      if (!channel.startsWith('private-')) { statusEl.textContent = 'Channel must start with private-.'; return; }
       if (!appId) { statusEl.textContent = 'Missing required Flask setting: APP_ID.'; return; }
       if (!appKey) { statusEl.textContent = 'Missing required Flask setting: APP_KEY.'; return; }
       const base = new URL(goBaseUrl);
       base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
       socket = new WebSocket(`${base.origin}/apps/${encodeURIComponent(appId)}/ws?key=${encodeURIComponent(appKey)}`);
-      socket.onopen = () => { statusEl.textContent = 'Connected to Go websocket.'; };
-      socket.onmessage = (event) => {
+      socket.onopen = () => { statusEl.textContent = 'Connected. Waiting for socket ID...'; };
+      socket.onmessage = async (event) => {
         const message = JSON.parse(event.data);
         if (message.event === 'connected') {
-          socket.send(JSON.stringify({ action: 'subscribe', channel: channelEl.value.trim() }));
-          appendMessage(`Subscribed to ${channelEl.value.trim()}`);
+          socketId = message.socket_id;
+          try {
+            const auth = await requestGrant();
+            socket.send(JSON.stringify({ action: 'subscribe', channel, auth }));
+            appendMessage(`Authorized and subscribed to ${channel}`);
+          } catch (error) { statusEl.textContent = error.message; }
           return;
         }
         appendMessage(JSON.stringify(message, null, 2));
@@ -77,15 +95,15 @@
     }
 
     document.getElementById('connectBtn').onclick = connect;
-    document.getElementById('disconnectBtn').onclick = () => { if (socket) socket.close(); };
+    document.getElementById('disconnectBtn').onclick = () => { if (socket) socket.close(); socketId = null; };
+    document.getElementById('logoutBtn').onclick = async () => { await fetch('/api/logout', { method: 'POST' }); window.location.href = '/login?next=/private'; };
     document.getElementById('publishBtn').onclick = async () => {
-      const channel = channelEl.value.trim();
       let payload;
       try { payload = JSON.parse(document.getElementById('eventPayload').value || '{}'); }
       catch { statusEl.textContent = 'Payload must be valid JSON.'; return; }
       const response = await fetch('/api/events', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channel, event: document.getElementById('eventName').value.trim() || 'message', payload })
+        body: JSON.stringify({ channel: channelEl.value.trim(), event: document.getElementById('eventName').value.trim() || 'message', payload })
       });
       const data = await response.json();
       statusEl.textContent = response.ok ? 'Event published successfully.' : (data.error || 'Publish failed');

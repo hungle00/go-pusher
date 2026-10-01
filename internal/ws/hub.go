@@ -1,9 +1,12 @@
 package ws
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/gorilla/websocket"
 )
@@ -11,6 +14,7 @@ import (
 type commandMessage struct {
 	Action  string `json:"action"`
 	Channel string `json:"channel"`
+	Auth    string `json:"auth"`
 }
 
 type broadcastMessage struct {
@@ -20,8 +24,10 @@ type broadcastMessage struct {
 }
 
 type client struct {
-	conn *websocket.Conn
-	send chan broadcastMessage
+	conn     *websocket.Conn
+	appID    string
+	socketID string
+	send     chan broadcastMessage
 }
 
 type subscription struct {
@@ -36,22 +42,30 @@ type channelKey struct {
 }
 
 type Hub struct {
-	clients    map[*client]bool
-	channels   map[channelKey]map[*client]bool
-	broadcast  chan broadcastEnvelope
-	register   chan *client
-	unregister chan *client
-	subscribe  chan subscription
+	clients       map[*client]bool
+	channels      map[channelKey]map[*client]bool
+	broadcast     chan broadcastEnvelope
+	register      chan *client
+	unregister    chan *client
+	subscribe     chan subscription
+	socketLookups chan socketLookup
+}
+
+type socketLookup struct {
+	socketID string
+	appID    string
+	result   chan bool
 }
 
 func NewHub() *Hub {
 	return &Hub{
-		clients:    make(map[*client]bool),
-		channels:   make(map[channelKey]map[*client]bool),
-		broadcast:  make(chan broadcastEnvelope),
-		register:   make(chan *client),
-		unregister: make(chan *client),
-		subscribe:  make(chan subscription),
+		clients:       make(map[*client]bool),
+		channels:      make(map[channelKey]map[*client]bool),
+		broadcast:     make(chan broadcastEnvelope),
+		register:      make(chan *client),
+		unregister:    make(chan *client),
+		subscribe:     make(chan subscription),
+		socketLookups: make(chan socketLookup),
 	}
 }
 
@@ -74,6 +88,16 @@ func (h *Hub) Run() {
 			}
 			h.channels[key][request.client] = true
 			log.Printf("Client subscribed to app %s channel %s", request.appID, request.channel)
+
+		case lookup := <-h.socketLookups:
+			valid := false
+			for client := range h.clients {
+				if client.socketID == lookup.socketID && client.appID == lookup.appID {
+					valid = true
+					break
+				}
+			}
+			lookup.result <- valid
 
 		case message := <-h.broadcast:
 			for subscriber := range h.channels[channelKey{appID: message.appID, channel: message.Channel}] {
@@ -114,15 +138,24 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-func (h *Hub) ServeAppHTTP(appID string, w http.ResponseWriter, r *http.Request) {
+func (h *Hub) SocketBelongs(appID, socketID string) bool {
+	result := make(chan bool)
+	h.socketLookups <- socketLookup{appID: appID, socketID: socketID, result: result}
+	return <-result
+}
+
+func (h *Hub) ServeAppHTTP(appID string, w http.ResponseWriter, r *http.Request, authorize func(string, string, string) error) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println("Failed to set websocket upgrade:", err)
 		return
 	}
 
-	client := &client{conn: conn, send: make(chan broadcastMessage, 256)}
+	client := &client{conn: conn, appID: appID, socketID: randomSocketID(), send: make(chan broadcastMessage, 256)}
 	h.register <- client
+	if err := conn.WriteJSON(map[string]string{"event": "connected", "socket_id": client.socketID}); err != nil {
+		return
+	}
 	go h.writeMessages(client)
 	defer func() {
 		h.unregister <- client
@@ -138,6 +171,15 @@ func (h *Hub) ServeAppHTTP(appID string, w http.ResponseWriter, r *http.Request)
 		switch command.Action {
 		case "subscribe":
 			if command.Channel != "" {
+				if strings.HasPrefix(command.Channel, "private-") {
+					if authorize == nil || authorize(client.socketID, command.Channel, command.Auth) != nil {
+						select {
+						case client.send <- broadcastMessage{Channel: command.Channel, Event: "subscription_error", Data: json.RawMessage(`{"error":"unauthorized"}`)}:
+						default:
+						}
+						continue
+					}
+				}
 				h.subscribe <- subscription{client: client, appID: appID, channel: command.Channel}
 			}
 		}
@@ -151,4 +193,12 @@ func (h *Hub) writeMessages(client *client) {
 			return
 		}
 	}
+}
+
+func randomSocketID() string {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(value)
 }
