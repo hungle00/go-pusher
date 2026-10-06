@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"ws-demo/internal/app"
+	"ws-demo/internal/ws"
 
 	"github.com/gin-gonic/gin"
 )
@@ -26,11 +27,16 @@ type SocketChecker interface {
 	SocketBelongs(appID, socketID string) bool
 }
 
+type ChannelStatsProvider interface {
+	ActiveChannels(appID string) []ws.ChannelStats
+}
+
 type Handler struct {
 	publisher Publisher
 	apps      *app.Registry
 	grants    GrantIssuer
 	sockets   SocketChecker
+	channels  ChannelStatsProvider
 }
 
 type eventPayload struct {
@@ -43,8 +49,20 @@ type createAppPayload struct {
 	Name string `json:"name" binding:"required"`
 }
 
-func NewHandler(publisher Publisher, apps *app.Registry, grants GrantIssuer, sockets SocketChecker) *Handler {
-	return &Handler{publisher: publisher, apps: apps, grants: grants, sockets: sockets}
+func NewHandler(publisher Publisher, apps *app.Registry, grants GrantIssuer, sockets SocketChecker, channels ChannelStatsProvider) *Handler {
+	return &Handler{publisher: publisher, apps: apps, grants: grants, sockets: sockets, channels: channels}
+}
+
+func (h *Handler) ListActiveChannels(c *gin.Context) {
+	if h.channels == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "channel tracking is not configured"})
+		return
+	}
+	appID := c.Param("appID")
+	c.JSON(http.StatusOK, gin.H{
+		"app_id":   appID,
+		"channels": h.channels.ActiveChannels(appID),
+	})
 }
 
 func (h *Handler) CreateApp(c *gin.Context) {

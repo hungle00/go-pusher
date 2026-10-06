@@ -27,19 +27,21 @@ func main() {
 		log.Fatalf("Could not open app database: %v", err)
 	}
 	defer apps.Close()
-	var grants *auth.GrantService
+	var grants api.GrantIssuer
 	if signingKey := os.Getenv("CHANNEL_AUTH_SIGNING_KEY"); signingKey != "" {
-		grants, err = auth.NewGrantService(signingKey, 30*time.Second)
-		if err != nil {
-			log.Fatalf("Could not configure channel authorization: %v", err)
+		grantService, grantErr := auth.NewGrantService(signingKey, 30*time.Second)
+		if grantErr != nil {
+			log.Fatalf("Could not configure channel authorization: %v", grantErr)
 		}
+		grants = grantService
 	}
-	handler := api.NewHandler(hub, apps, grants, hub)
+	handler := api.NewHandler(hub, apps, grants, hub, hub)
 
 	r := gin.Default()
 	r.Static("/public", "./public")
 	r.StaticFile("/", "./public/index.html")
 	r.POST("/apps", handler.CreateApp)
+	r.GET("/apps/:appID/channels", handler.ListActiveChannels)
 	r.POST("/apps/:appID/events", handler.PublishEvent)
 	r.POST("/apps/:appID/private-channel-auth", handler.AuthorizePrivateChannel)
 	r.GET("/apps/:appID/ws", func(c *gin.Context) {
@@ -58,8 +60,12 @@ func main() {
 		})
 	})
 
-	fmt.Println("Server running on http://localhost:8080")
-	if err := r.Run(":8080"); err != nil {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	fmt.Printf("Server running on http://localhost:%s\n", port)
+	if err := r.Run(":" + port); err != nil {
 		log.Fatal(err)
 	}
 }

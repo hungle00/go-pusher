@@ -9,10 +9,28 @@
     input, button { padding: 8px 10px; }
     pre { background: #f4f4f4; padding: 12px; border-radius: 6px; }
     label { display: block; margin: 8px 0 4px; }
+    .panel { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin: 20px 0; }
+    table { width: 100%; border-collapse: collapse; text-align: left; }
+    th, td { padding: 10px; border-bottom: 1px solid #ddd; }
+    .muted { color: #666; }
   </style>
 </head>
 <body>
   <h2>Register a Pusher-style app</h2>
+
+  <section id="dashboard" class="panel" style="display:none;">
+    <h3>Current app</h3>
+    <p><strong id="currentAppName"></strong> <span class="muted">(<span id="currentAppId"></span>)</span></p>
+    <div class="row">
+      <button id="refreshChannels" type="button">Refresh channels</button>
+      <button id="forgetApp" type="button">Forget this app</button>
+    </div>
+    <p id="channelStatus" class="muted">Loading channels...</p>
+    <table>
+      <thead><tr><th>Channel</th><th>Subscribers</th></tr></thead>
+      <tbody id="channelRows"></tbody>
+    </table>
+  </section>
 
   <form id="registerForm">
     <div class="row">
@@ -47,6 +65,76 @@
     const form = document.getElementById('registerForm');
     const statusBox = document.getElementById('status');
     const credentialsBox = document.getElementById('credentials');
+    const dashboard = document.getElementById('dashboard');
+    const channelRows = document.getElementById('channelRows');
+    const channelStatus = document.getElementById('channelStatus');
+    const savedAppKey = 'go-pusher.selected-app';
+
+    function saveSelectedApp(app) {
+      const selection = { name: app.name, id: app.id };
+      localStorage.setItem(savedAppKey, JSON.stringify(selection));
+      showSelectedApp(selection);
+    }
+
+    function showSelectedApp(app) {
+      dashboard.style.display = 'block';
+      document.getElementById('currentAppName').textContent = app.name;
+      document.getElementById('currentAppId').textContent = app.id;
+      loadChannels(app.id);
+    }
+
+    async function loadChannels(appId) {
+      channelStatus.textContent = 'Loading channels...';
+      try {
+        const response = await fetch(`/apps/${encodeURIComponent(appId)}/channels`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Could not load channels');
+        channelRows.replaceChildren();
+        if (data.channels.length === 0) {
+          channelStatus.textContent = 'No active channels for this app.';
+          return;
+        }
+        channelStatus.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+        for (const channel of data.channels) {
+          const row = document.createElement('tr');
+          const name = document.createElement('td');
+          const count = document.createElement('td');
+          name.textContent = channel.name;
+          count.textContent = channel.subscriber_count;
+          row.append(name, count);
+          channelRows.append(row);
+        }
+      } catch (error) {
+        channelStatus.textContent = error.message;
+      }
+    }
+
+    const savedApp = localStorage.getItem(savedAppKey);
+    if (savedApp) {
+      try {
+        const selection = JSON.parse(savedApp);
+        if (selection.name && selection.id) showSelectedApp(selection);
+        else localStorage.removeItem(savedAppKey);
+      } catch {
+        localStorage.removeItem(savedAppKey);
+      }
+    }
+
+    document.getElementById('refreshChannels').addEventListener('click', () => {
+      const selection = JSON.parse(localStorage.getItem(savedAppKey) || 'null');
+      if (selection) loadChannels(selection.id);
+    });
+
+    document.getElementById('forgetApp').addEventListener('click', () => {
+      localStorage.removeItem(savedAppKey);
+      dashboard.style.display = 'none';
+      channelRows.replaceChildren();
+    });
+
+    setInterval(() => {
+      const selection = JSON.parse(localStorage.getItem(savedAppKey) || 'null');
+      if (selection) loadChannels(selection.id);
+    }, 5000);
 
     form.addEventListener('submit', async function (event) {
       event.preventDefault();
@@ -73,6 +161,7 @@
         document.getElementById('appId').value = data.id;
         document.getElementById('appKey').value = data.key;
         document.getElementById('appSecret').value = data.secret;
+        saveSelectedApp({ name: data.name || name, id: data.id });
         document.getElementById('envBlock').textContent = [
           `APP_ID=${data.id}`,
           `APP_KEY=${data.key}`,

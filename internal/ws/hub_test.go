@@ -3,6 +3,7 @@ package ws
 import (
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,40 @@ func TestCommandRateLimiterResetsAfterWindow(t *testing.T) {
 	}
 	if !limiter.allow(start.Add(commandRateWindow)) {
 		t.Fatal("commands should be allowed again in the next window")
+	}
+}
+
+func TestActiveChannelsAreAppScopedAndCountUniqueClients(t *testing.T) {
+	hub := NewHub()
+	go hub.Run()
+
+	first := &client{appID: "app-one", socketID: "socket-one", send: make(chan broadcastMessage, 1)}
+	second := &client{appID: "app-one", socketID: "socket-two", send: make(chan broadcastMessage, 1)}
+	otherApp := &client{appID: "app-two", socketID: "socket-three", send: make(chan broadcastMessage, 1)}
+	for _, connected := range []*client{first, second, otherApp} {
+		hub.register <- connected
+	}
+
+	hub.subscribe <- subscription{client: first, appID: "app-one", channel: "notifications"}
+	hub.subscribe <- subscription{client: first, appID: "app-one", channel: "notifications"}
+	hub.subscribe <- subscription{client: second, appID: "app-one", channel: "notifications"}
+	hub.subscribe <- subscription{client: second, appID: "app-one", channel: "private-orders"}
+	hub.subscribe <- subscription{client: otherApp, appID: "app-two", channel: "notifications"}
+
+	got := hub.ActiveChannels("app-one")
+	want := []ChannelStats{
+		{Name: "notifications", SubscriberCount: 2},
+		{Name: "private-orders", SubscriberCount: 1},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ActiveChannels(app-one) = %#v, want %#v", got, want)
+	}
+
+	hub.unregister <- second
+	got = hub.ActiveChannels("app-one")
+	want = []ChannelStats{{Name: "notifications", SubscriberCount: 1}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ActiveChannels after disconnect = %#v, want %#v", got, want)
 	}
 }
 

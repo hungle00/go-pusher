@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -38,7 +39,7 @@ type client struct {
 }
 
 type commandRateLimiter struct {
-	windowStart time.Time
+	windowStart  time.Time
 	commandCount int
 }
 
@@ -66,13 +67,14 @@ type channelKey struct {
 }
 
 type Hub struct {
-	clients       map[*client]bool
-	channels      map[channelKey]map[*client]bool
-	broadcast     chan broadcastEnvelope
-	register      chan *client
-	unregister    chan *client
-	subscribe     chan subscription
-	socketLookups chan socketLookup
+	clients          map[*client]bool
+	channels         map[channelKey]map[*client]bool
+	broadcast        chan broadcastEnvelope
+	register         chan *client
+	unregister       chan *client
+	subscribe        chan subscription
+	socketLookups    chan socketLookup
+	channelSnapshots chan channelSnapshotRequest
 }
 
 type socketLookup struct {
@@ -81,15 +83,26 @@ type socketLookup struct {
 	result   chan bool
 }
 
+type ChannelStats struct {
+	Name            string `json:"name"`
+	SubscriberCount int    `json:"subscriber_count"`
+}
+
+type channelSnapshotRequest struct {
+	appID  string
+	result chan []ChannelStats
+}
+
 func NewHub() *Hub {
 	return &Hub{
-		clients:       make(map[*client]bool),
-		channels:      make(map[channelKey]map[*client]bool),
-		broadcast:     make(chan broadcastEnvelope),
-		register:      make(chan *client),
-		unregister:    make(chan *client),
-		subscribe:     make(chan subscription),
-		socketLookups: make(chan socketLookup),
+		clients:          make(map[*client]bool),
+		channels:         make(map[channelKey]map[*client]bool),
+		broadcast:        make(chan broadcastEnvelope),
+		register:         make(chan *client),
+		unregister:       make(chan *client),
+		subscribe:        make(chan subscription),
+		socketLookups:    make(chan socketLookup),
+		channelSnapshots: make(chan channelSnapshotRequest),
 	}
 }
 
@@ -122,6 +135,16 @@ func (h *Hub) Run() {
 				}
 			}
 			lookup.result <- valid
+
+		case snapshot := <-h.channelSnapshots:
+			channels := make([]ChannelStats, 0)
+			for key, subscribers := range h.channels {
+				if key.appID == snapshot.appID && len(subscribers) > 0 {
+					channels = append(channels, ChannelStats{Name: key.channel, SubscriberCount: len(subscribers)})
+				}
+			}
+			sort.Slice(channels, func(i, j int) bool { return channels[i].Name < channels[j].Name })
+			snapshot.result <- channels
 
 		case message := <-h.broadcast:
 			for subscriber := range h.channels[channelKey{appID: message.appID, channel: message.Channel}] {
@@ -165,6 +188,12 @@ var upgrader = websocket.Upgrader{
 func (h *Hub) SocketBelongs(appID, socketID string) bool {
 	result := make(chan bool)
 	h.socketLookups <- socketLookup{appID: appID, socketID: socketID, result: result}
+	return <-result
+}
+
+func (h *Hub) ActiveChannels(appID string) []ChannelStats {
+	result := make(chan []ChannelStats, 1)
+	h.channelSnapshots <- channelSnapshotRequest{appID: appID, result: result}
 	return <-result
 }
 
