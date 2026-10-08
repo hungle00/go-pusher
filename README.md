@@ -5,6 +5,8 @@ service built with Go, WebSockets, and SQLite. The Go service registers apps and
 routes events by app and channel. A Flask client demonstrates publishing and
 subscribing with a registered app.
 
+![Visual Dashboard](screenshots/pusher-demo.png "a title")
+
 ## Run Go
 
 ```sh

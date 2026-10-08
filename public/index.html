@@ -2,64 +2,246 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Register Pusher App</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Go Pusher Dashboard</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 32px; }
-    .row { margin-bottom: 16px; }
-    input, button { padding: 8px 10px; }
-    pre { background: #f4f4f4; padding: 12px; border-radius: 6px; }
-    label { display: block; margin: 8px 0 4px; }
-    .panel { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin: 20px 0; }
-    table { width: 100%; border-collapse: collapse; text-align: left; }
-    th, td { padding: 10px; border-bottom: 1px solid #ddd; }
-    .muted { color: #666; }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #f6f8fa;
+      color: #1f2328;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 24px;
+      background: #fff;
+      border-bottom: 1px solid #d0d7de;
+    }
+    header h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.3px; }
+    .live-dot {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      margin-left: 6px;
+      color: #1a7f37;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .live-dot::before {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #1a7f37;
+      content: "";
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    .container { max-width: 800px; margin: 0 auto; padding: 20px; }
+    .stats-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .stat-card, .panel {
+      background: #fff;
+      border: 1px solid #d0d7de;
+      border-radius: 8px;
+      box-shadow: 0 1px 2px rgba(31, 35, 40, 0.04);
+    }
+    .stat-card { padding: 12px 16px; }
+    .stat-card .label {
+      margin-bottom: 4px;
+      color: #636c76;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+    .stat-card .value { color: #0969da; font-size: 28px; font-weight: 700; line-height: 1.1; }
+    .panel { margin-bottom: 16px; overflow: hidden; }
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 16px;
+      border-bottom: 1px solid #d0d7de;
+      background: #f6f8fa;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .panel-body { padding: 16px; }
+    .app-name { margin: 0 0 4px; font-size: 16px; font-weight: 600; }
+    .app-id, .muted { color: #636c76; font-size: 13px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    button {
+      padding: 6px 12px;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      background: #fff;
+      color: #1f2328;
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    button:hover { background: #f3f4f6; }
+    button:focus-visible { outline: 2px solid #0969da; outline-offset: 2px; }
+    button.primary { border-color: #1f883d; background: #1f883d; color: #fff; }
+    button.primary:hover { background: #1a7f37; }
+    .panel-body table { width: 100%; border-collapse: collapse; }
+    th {
+      padding: 8px 16px;
+      border-bottom: 1px solid #d0d7de;
+      background: #fff;
+      color: #636c76;
+      font-size: 11px;
+      letter-spacing: 0.5px;
+      text-align: left;
+      text-transform: uppercase;
+    }
+    td { padding: 10px 16px; border-bottom: 1px solid #e1e4e8; font-size: 13px; }
+    tr:last-child td { border-bottom: 0; }
+    .badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border: 1px solid #54aeff4d;
+      border-radius: 10px;
+      background: #ddf4ff;
+      color: #0969da;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+    }
+    .badge.private { border-color: #ff81824d; background: #ffebe9; color: #cf222e; }
+    .empty-state { padding: 20px; color: #636c76; font-size: 13px; text-align: center; }
+    .status { margin: 0; color: #636c76; font-size: 12px; font-weight: 400; }
+    .register-panel { margin-top: 24px; }
+    .register-panel form, .credentials { padding: 16px; }
+    label { display: block; margin-bottom: 6px; color: #636c76; font-size: 12px; font-weight: 600; }
+    input {
+      width: 100%;
+      min-height: 36px;
+      padding: 7px 10px;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      background: #fff;
+      color: #1f2328;
+      font: inherit;
+      font-size: 13px;
+    }
+    input:focus { border-color: #0969da; outline: 2px solid #0969da33; }
+    .form-row { display: flex; align-items: end; gap: 8px; }
+    .form-field { flex: 1; }
+    .form-status { min-height: 20px; margin: 12px 0 0; font-size: 13px; }
+    .credential-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .credential-grid .secret { grid-column: 1 / -1; }
+    .credentials p { margin: 16px 0 8px; color: #636c76; font-size: 13px; }
+    pre {
+      overflow-x: auto;
+      margin: 0;
+      padding: 12px;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      background: #f6f8fa;
+      font-size: 12px;
+    }
+    [hidden] { display: none !important; }
+    @media (max-width: 560px) {
+      header { padding: 12px 16px; }
+      .container { padding: 16px; }
+      .stats-row { gap: 8px; }
+      .stat-card { padding: 10px 12px; }
+      .stat-card .value { font-size: 24px; }
+      .panel-body { padding: 12px; }
+      th, td { padding: 8px 10px; }
+      .form-row { align-items: stretch; flex-direction: column; }
+      .credential-grid { grid-template-columns: 1fr; }
+      .credential-grid .secret { grid-column: auto; }
+    }
   </style>
 </head>
 <body>
-  <h2>Register a Pusher-style app</h2>
+  <header>
+    <h1>Go Pusher</h1>
+    <span id="liveIndicator" class="live-dot" hidden>Live</span>
+  </header>
 
-  <section id="dashboard" class="panel" style="display:none;">
-    <h3>Current app</h3>
-    <p><strong id="currentAppName"></strong> <span class="muted">(<span id="currentAppId"></span>)</span></p>
-    <div class="row">
-      <button id="refreshChannels" type="button">Refresh channels</button>
-      <button id="forgetApp" type="button">Forget this app</button>
-    </div>
-    <p id="channelStatus" class="muted">Loading channels...</p>
-    <table>
-      <thead><tr><th>Channel</th><th>Subscribers</th></tr></thead>
-      <tbody id="channelRows"></tbody>
-    </table>
-  </section>
+  <main class="container">
+    <section id="dashboard" hidden aria-label="Selected app dashboard">
+      <div class="stats-row">
+        <div class="stat-card">
+          <div class="label">Active Channels</div>
+          <div class="value" id="channelCount">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Active Subscriptions</div>
+          <div class="value" id="subscriberCount">0</div>
+        </div>
+      </div>
 
-  <form id="registerForm">
-    <div class="row">
-      <label for="appName">App name</label>
-      <input id="appName" type="text" placeholder="e.g. my-flask-client" required />
-      <button type="submit">Register app</button>
-    </div>
-  </form>
+      <section class="panel">
+        <div class="panel-header">Current app</div>
+        <div class="panel-body">
+          <p id="currentAppName" class="app-name"></p>
+          <p id="currentAppId" class="app-id"></p>
+          <div class="actions" style="margin-top: 14px;">
+            <button id="refreshChannels" type="button">Refresh channels</button>
+            <button id="forgetApp" type="button">Forget this app</button>
+          </div>
+        </div>
+      </section>
 
-  <div id="status"></div>
+      <section class="panel">
+        <div class="panel-header">
+          <span>Channels</span>
+          <span id="channelStatus" class="status" role="status" aria-live="polite">Loading channels...</span>
+        </div>
+        <div id="channelContent" class="panel-body">
+          <div id="emptyChannels" class="empty-state">No active channels</div>
+          <table id="channelTable" hidden>
+            <thead>
+              <tr><th>Channel</th><th>Type</th><th>Subscribers</th></tr>
+            </thead>
+            <tbody id="channelRows"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
 
-  <div id="credentials" style="display:none; margin-top:24px;">
-    <h3>App credentials</h3>
-    <div class="row">
-      <label for="appId">App ID</label>
-      <input id="appId" type="text" readonly />
-    </div>
-    <div class="row">
-      <label for="appKey">App key</label>
-      <input id="appKey" type="text" readonly />
-    </div>
-    <div class="row">
-      <label for="appSecret">App secret</label>
-      <input id="appSecret" type="text" readonly />
-    </div>
-
-    <p>Use these values in your Flask client:</p>
-    <pre id="envBlock"></pre>
-  </div>
+    <section id="registerPanel" class="panel register-panel">
+      <div class="panel-header">Register a Pusher-style app</div>
+      <form id="registerForm">
+        <div class="form-row">
+          <div class="form-field">
+            <label for="appName">App name</label>
+            <input id="appName" type="text" placeholder="e.g. my-flask-client" required>
+          </div>
+          <button class="primary" type="submit">Register app</button>
+        </div>
+        <p id="status" class="form-status" role="status" aria-live="polite"></p>
+      </form>
+      <div id="credentials" class="credentials" hidden>
+        <div class="credential-grid">
+          <div>
+            <label for="appId">App ID</label>
+            <input id="appId" type="text" readonly>
+          </div>
+          <div>
+            <label for="appKey">App key</label>
+            <input id="appKey" type="text" readonly>
+          </div>
+          <div class="secret">
+            <label for="appSecret">App secret</label>
+            <input id="appSecret" type="text" readonly>
+          </div>
+        </div>
+        <p>Use these values in your client configuration:</p>
+        <pre id="envBlock"></pre>
+      </div>
+    </section>
+  </main>
 
   <script>
     const form = document.getElementById('registerForm');
@@ -67,7 +249,10 @@
     const credentialsBox = document.getElementById('credentials');
     const dashboard = document.getElementById('dashboard');
     const channelRows = document.getElementById('channelRows');
+    const channelTable = document.getElementById('channelTable');
+    const emptyChannels = document.getElementById('emptyChannels');
     const channelStatus = document.getElementById('channelStatus');
+    const registerPanel = document.getElementById('registerPanel');
     const savedAppKey = 'go-pusher.selected-app';
 
     function saveSelectedApp(app) {
@@ -77,9 +262,10 @@
     }
 
     function showSelectedApp(app) {
-      dashboard.style.display = 'block';
+      dashboard.hidden = false;
+      document.getElementById('liveIndicator').hidden = false;
       document.getElementById('currentAppName').textContent = app.name;
-      document.getElementById('currentAppId').textContent = app.id;
+      document.getElementById('currentAppId').textContent = `App ID: ${app.id}`;
       loadChannels(app.id);
     }
 
@@ -89,21 +275,33 @@
         const response = await fetch(`/apps/${encodeURIComponent(appId)}/channels`);
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'Could not load channels');
+
         channelRows.replaceChildren();
-        if (data.channels.length === 0) {
-          channelStatus.textContent = 'No active channels for this app.';
-          return;
-        }
-        channelStatus.textContent = `Updated ${new Date().toLocaleTimeString()}`;
-        for (const channel of data.channels) {
+        const channels = Array.isArray(data.channels) ? data.channels : [];
+        document.getElementById('channelCount').textContent = channels.length;
+        document.getElementById('subscriberCount').textContent = channels.reduce(
+          (total, channel) => total + (Number(channel.subscriber_count) || 0),
+          0
+        );
+        channelTable.hidden = channels.length === 0;
+        emptyChannels.hidden = channels.length !== 0;
+
+        for (const channel of channels) {
           const row = document.createElement('tr');
           const name = document.createElement('td');
+          const typeCell = document.createElement('td');
           const count = document.createElement('td');
+          const type = channel.name.startsWith('private-') ? 'private' : 'public';
+          const badge = document.createElement('span');
+          badge.className = type === 'private' ? 'badge private' : 'badge';
+          badge.textContent = type;
           name.textContent = channel.name;
+          typeCell.append(badge);
           count.textContent = channel.subscriber_count;
-          row.append(name, count);
+          row.append(name, typeCell, count);
           channelRows.append(row);
         }
+        channelStatus.textContent = `Updated ${new Date().toLocaleTimeString()}`;
       } catch (error) {
         channelStatus.textContent = error.message;
       }
@@ -113,7 +311,10 @@
     if (savedApp) {
       try {
         const selection = JSON.parse(savedApp);
-        if (selection.name && selection.id) showSelectedApp(selection);
+        if (selection.name && selection.id) {
+          showSelectedApp(selection);
+          registerPanel.hidden = true;
+        }
         else localStorage.removeItem(savedAppKey);
       } catch {
         localStorage.removeItem(savedAppKey);
@@ -127,7 +328,9 @@
 
     document.getElementById('forgetApp').addEventListener('click', () => {
       localStorage.removeItem(savedAppKey);
-      dashboard.style.display = 'none';
+      dashboard.hidden = true;
+      document.getElementById('liveIndicator').hidden = true;
+      registerPanel.hidden = false;
       channelRows.replaceChildren();
     });
 
@@ -147,28 +350,25 @@
       statusBox.textContent = 'Registering app...';
 
       try {
-        const res = await fetch('/apps', {
+        const response = await fetch('/apps', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name })
         });
-
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.error || 'Failed to create app');
-        }
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Failed to create app');
 
         document.getElementById('appId').value = data.id;
         document.getElementById('appKey').value = data.key;
         document.getElementById('appSecret').value = data.secret;
-        saveSelectedApp({ name: data.name || name, id: data.id });
         document.getElementById('envBlock').textContent = [
           `APP_ID=${data.id}`,
           `APP_KEY=${data.key}`,
           `APP_SECRET=${data.secret}`
         ].join('\n');
 
-        credentialsBox.style.display = 'block';
+        credentialsBox.hidden = false;
+        saveSelectedApp({ name: data.name || name, id: data.id });
         statusBox.textContent = 'App registered successfully.';
       } catch (error) {
         statusBox.textContent = error.message;
