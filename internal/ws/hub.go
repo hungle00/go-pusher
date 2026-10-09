@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"sort"
@@ -59,6 +60,18 @@ type subscription struct {
 	client  *client
 	appID   string
 	channel string
+	member  *PresenceMember
+	result  chan error
+}
+
+type PresenceMember struct {
+	UserID   string          `json:"user_id"`
+	UserInfo json.RawMessage `json:"user_info,omitempty"`
+}
+
+type presenceMember struct {
+	PresenceMember
+	clients map[*client]bool
 }
 
 type channelKey struct {
@@ -69,6 +82,7 @@ type channelKey struct {
 type Hub struct {
 	clients          map[*client]bool
 	channels         map[channelKey]map[*client]bool
+	presenceMembers  map[channelKey]map[string]*presenceMember
 	broadcast        chan broadcastEnvelope
 	register         chan *client
 	unregister       chan *client
@@ -97,6 +111,7 @@ func NewHub() *Hub {
 	return &Hub{
 		clients:          make(map[*client]bool),
 		channels:         make(map[channelKey]map[*client]bool),
+		presenceMembers:  make(map[channelKey]map[string]*presenceMember),
 		broadcast:        make(chan broadcastEnvelope),
 		register:         make(chan *client),
 		unregister:       make(chan *client),
@@ -116,15 +131,10 @@ func (h *Hub) Run() {
 			h.removeClient(client)
 
 		case request := <-h.subscribe:
-			if !h.clients[request.client] {
-				continue
+			err := h.addSubscription(request)
+			if request.result != nil {
+				request.result <- err
 			}
-			key := channelKey{appID: request.appID, channel: request.channel}
-			if h.channels[key] == nil {
-				h.channels[key] = make(map[*client]bool)
-			}
-			h.channels[key][request.client] = true
-			log.Printf("Client subscribed to app %s channel %s", request.appID, request.channel)
 
 		case lookup := <-h.socketLookups:
 			valid := false
@@ -167,17 +177,153 @@ type broadcastEnvelope struct {
 	broadcastMessage
 }
 
-func (h *Hub) removeClient(client *client) {
-	if !h.clients[client] {
+func (h *Hub) addSubscription(request subscription) error {
+	if !h.clients[request.client] || request.appID != request.client.appID || request.channel == "" {
+		return errors.New("socket is not connected to this app")
+	}
+	isPresence := strings.HasPrefix(request.channel, "presence-")
+	if isPresence && (request.member == nil || request.member.UserID == "") {
+		return errors.New("presence subscription requires a verified user")
+	}
+	if !isPresence && request.member != nil {
+		return errors.New("user identity is only valid for presence channels")
+	}
+
+	key := channelKey{appID: request.appID, channel: request.channel}
+	subscribers := h.channels[key]
+	if isPresence {
+		for userID, member := range h.presenceMembers[key] {
+			if member.clients[request.client] && userID != request.member.UserID {
+				return errors.New("socket is already subscribed as another presence user")
+			}
+		}
+	}
+
+	existingSubscribers := make([]*client, 0, len(subscribers))
+	for subscriber := range subscribers {
+		existingSubscribers = append(existingSubscribers, subscriber)
+	}
+	if subscribers == nil {
+		subscribers = make(map[*client]bool)
+		h.channels[key] = subscribers
+	}
+	subscribers[request.client] = true
+
+	ackData := json.RawMessage(`{}`)
+	newMember := false
+	if isPresence {
+		members := h.presenceMembers[key]
+		if members == nil {
+			members = make(map[string]*presenceMember)
+			h.presenceMembers[key] = members
+		}
+		current := members[request.member.UserID]
+		if current == nil {
+			current = &presenceMember{PresenceMember: *request.member, clients: make(map[*client]bool)}
+			members[request.member.UserID] = current
+			newMember = true
+		}
+		current.clients[request.client] = true
+
+		memberList := make([]PresenceMember, 0, len(members))
+		for _, member := range members {
+			memberList = append(memberList, member.PresenceMember)
+		}
+		sort.Slice(memberList, func(i, j int) bool { return memberList[i].UserID < memberList[j].UserID })
+		ackData = marshalMessageData(struct {
+			Presence struct {
+				Count   int              `json:"count"`
+				Members []PresenceMember `json:"members"`
+			} `json:"presence"`
+		}{Presence: struct {
+			Count   int              `json:"count"`
+			Members []PresenceMember `json:"members"`
+		}{Count: len(memberList), Members: memberList}})
+	}
+
+	if !h.enqueue(request.client, broadcastMessage{Channel: request.channel, Event: "subscription_succeeded", Data: ackData}) {
+		h.removeClient(request.client)
+		return nil
+	}
+	if newMember {
+		data := marshalMessageData(request.member)
+		var overflow []*client
+		for _, subscriber := range existingSubscribers {
+			if subscriber == request.client {
+				continue
+			}
+			if member := h.presenceMembers[key][request.member.UserID]; member.clients[subscriber] {
+				continue
+			}
+			if !h.enqueue(subscriber, broadcastMessage{Channel: request.channel, Event: "member_added", Data: data}) {
+				overflow = append(overflow, subscriber)
+			}
+		}
+		for _, subscriber := range overflow {
+			h.removeClient(subscriber)
+		}
+	}
+	log.Printf("Client subscribed to app %s channel %s", request.appID, request.channel)
+	return nil
+}
+
+func marshalMessageData(value any) json.RawMessage {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return data
+}
+
+func (h *Hub) enqueue(client *client, message broadcastMessage) bool {
+	select {
+	case client.send <- message:
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *Hub) removeClient(disconnected *client) {
+	if !h.clients[disconnected] {
 		return
 	}
-	delete(h.clients, client)
-	close(client.send)
+	delete(h.clients, disconnected)
+	close(disconnected.send)
+	var overflow []*client
 	for channel, subscribers := range h.channels {
-		delete(subscribers, client)
+		if !subscribers[disconnected] {
+			continue
+		}
+		delete(subscribers, disconnected)
+		if strings.HasPrefix(channel.channel, "presence-") {
+			members := h.presenceMembers[channel]
+			for userID, member := range members {
+				if !member.clients[disconnected] {
+					continue
+				}
+				delete(member.clients, disconnected)
+				if len(member.clients) == 0 {
+					delete(members, userID)
+					data := marshalMessageData(member.PresenceMember)
+					for subscriber := range subscribers {
+						if !h.enqueue(subscriber, broadcastMessage{Channel: channel.channel, Event: "member_removed", Data: data}) {
+							overflow = append(overflow, subscriber)
+						}
+					}
+				}
+				break
+			}
+		}
 		if len(subscribers) == 0 {
 			delete(h.channels, channel)
+			delete(h.presenceMembers, channel)
+		} else if len(h.presenceMembers[channel]) == 0 {
+			delete(h.presenceMembers, channel)
 		}
+	}
+	for _, subscriber := range overflow {
+		h.removeClient(subscriber)
 	}
 }
 
@@ -197,7 +343,7 @@ func (h *Hub) ActiveChannels(appID string) []ChannelStats {
 	return <-result
 }
 
-func (h *Hub) ServeAppHTTP(appID string, w http.ResponseWriter, r *http.Request, authorize func(string, string, string) error) {
+func (h *Hub) ServeAppHTTP(appID string, w http.ResponseWriter, r *http.Request, authorize func(string, string, string) (*PresenceMember, error)) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println("Failed to set websocket upgrade:", err)
@@ -234,18 +380,38 @@ func (h *Hub) ServeAppHTTP(appID string, w http.ResponseWriter, r *http.Request,
 		switch command.Action {
 		case "subscribe":
 			if command.Channel != "" {
-				if strings.HasPrefix(command.Channel, "private-") {
-					if authorize == nil || authorize(client.socketID, command.Channel, command.Auth) != nil {
-						select {
-						case client.send <- broadcastMessage{Channel: command.Channel, Event: "subscription_error", Data: json.RawMessage(`{"error":"unauthorized"}`)}:
-						default:
-						}
+				isPrivate := strings.HasPrefix(command.Channel, "private-")
+				isPresence := strings.HasPrefix(command.Channel, "presence-")
+				var member *PresenceMember
+				if isPrivate || isPresence {
+					var err error
+					if authorize == nil {
+						err = errors.New("authorization is not configured")
+					} else {
+						member, err = authorize(client.socketID, command.Channel, command.Auth)
+					}
+					if err != nil || (isPresence && (member == nil || member.UserID == "")) {
+						h.rejectSubscription(client, command.Channel)
 						continue
 					}
 				}
-				h.subscribe <- subscription{client: client, appID: appID, channel: command.Channel}
+				result := make(chan error, 1)
+				h.subscribe <- subscription{client: client, appID: appID, channel: command.Channel, member: member, result: result}
+				if err := <-result; err != nil {
+					h.rejectSubscription(client, command.Channel)
+				}
 			}
 		}
+	}
+}
+
+func (h *Hub) rejectSubscription(client *client, channel string) {
+	if !h.enqueue(client, broadcastMessage{
+		Channel: channel,
+		Event:   "subscription_error",
+		Data:    json.RawMessage(`{"error":"unauthorized"}`),
+	}) {
+		h.unregister <- client
 	}
 }
 

@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -10,6 +11,54 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+func TestPresenceSubscriptionEventsUseUniqueUsers(t *testing.T) {
+	hub := NewHub()
+	go hub.Run()
+
+	firstAlice := &client{appID: "app-one", socketID: "alice-1", send: make(chan broadcastMessage, 8)}
+	bob := &client{appID: "app-one", socketID: "bob-1", send: make(chan broadcastMessage, 8)}
+	secondAlice := &client{appID: "app-one", socketID: "alice-2", send: make(chan broadcastMessage, 8)}
+	for _, connected := range []*client{firstAlice, bob, secondAlice} {
+		hub.register <- connected
+	}
+
+	hub.subscribe <- subscription{client: firstAlice, appID: "app-one", channel: "presence-room", member: &PresenceMember{UserID: "alice", UserInfo: json.RawMessage(`{"name":"Alice"}`)}}
+	firstAck := <-firstAlice.send
+	if firstAck.Event != "subscription_succeeded" || !strings.Contains(string(firstAck.Data), `"count":1`) {
+		t.Fatalf("unexpected first presence acknowledgment: %#v", firstAck)
+	}
+
+	hub.subscribe <- subscription{client: bob, appID: "app-one", channel: "presence-room", member: &PresenceMember{UserID: "bob", UserInfo: json.RawMessage(`{"name":"Bob"}`)}}
+	if got := (<-bob.send).Event; got != "subscription_succeeded" {
+		t.Fatalf("new member got event %q, want subscription_succeeded", got)
+	}
+	if got := (<-firstAlice.send).Event; got != "member_added" {
+		t.Fatalf("existing member got event %q, want member_added", got)
+	}
+
+	hub.subscribe <- subscription{client: secondAlice, appID: "app-one", channel: "presence-room", member: &PresenceMember{UserID: "alice", UserInfo: json.RawMessage(`{"name":"Alice"}`)}}
+	secondAck := <-secondAlice.send
+	if secondAck.Event != "subscription_succeeded" || !strings.Contains(string(secondAck.Data), `"count":2`) {
+		t.Fatalf("second socket should see two unique users: %#v", secondAck)
+	}
+	select {
+	case message := <-bob.send:
+		t.Fatalf("duplicate socket caused an extra presence event: %#v", message)
+	default:
+	}
+
+	hub.unregister <- firstAlice
+	select {
+	case message := <-bob.send:
+		t.Fatalf("member_removed sent before the user's final socket left: %#v", message)
+	default:
+	}
+	hub.unregister <- secondAlice
+	if got := (<-bob.send).Event; got != "member_removed" {
+		t.Fatalf("last socket departure sent %q, want member_removed", got)
+	}
+}
 
 func TestCommandRateLimiterResetsAfterWindow(t *testing.T) {
 	start := time.Date(2026, time.September, 30, 12, 0, 0, 0, time.UTC)
@@ -32,9 +81,9 @@ func TestActiveChannelsAreAppScopedAndCountUniqueClients(t *testing.T) {
 	hub := NewHub()
 	go hub.Run()
 
-	first := &client{appID: "app-one", socketID: "socket-one", send: make(chan broadcastMessage, 1)}
-	second := &client{appID: "app-one", socketID: "socket-two", send: make(chan broadcastMessage, 1)}
-	otherApp := &client{appID: "app-two", socketID: "socket-three", send: make(chan broadcastMessage, 1)}
+	first := &client{appID: "app-one", socketID: "socket-one", send: make(chan broadcastMessage, 8)}
+	second := &client{appID: "app-one", socketID: "socket-two", send: make(chan broadcastMessage, 8)}
+	otherApp := &client{appID: "app-two", socketID: "socket-three", send: make(chan broadcastMessage, 8)}
 	for _, connected := range []*client{first, second, otherApp} {
 		hub.register <- connected
 	}

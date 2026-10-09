@@ -21,8 +21,8 @@
 
   <div class="panel">
     <div class="row">
-      <label for="channel">Private channel</label>
-      <input id="channel" type="text" value="private-orders" />
+      <label for="channel">Private or presence channel</label>
+      <input id="channel" type="text" value="presence-room-1" />
     </div>
     <button id="connectBtn" type="button">Connect & authorize</button>
     <button id="disconnectBtn" type="button">Disconnect</button>
@@ -64,13 +64,16 @@
         body: JSON.stringify({ socket_id: socketId, channel: channelEl.value.trim() })
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Private-channel authorization failed');
-      return data.auth;
+      if (!response.ok) throw new Error(data.error || 'Channel authorization failed');
+      return data;
     }
 
     function connect() {
       const channel = channelEl.value.trim();
-      if (!channel.startsWith('private-')) { statusEl.textContent = 'Channel must start with private-.'; return; }
+      if (!channel.startsWith('private-') && !channel.startsWith('presence-')) {
+        statusEl.textContent = 'Channel must start with private- or presence-.';
+        return;
+      }
       if (!appId) { statusEl.textContent = 'Missing required Flask setting: APP_ID.'; return; }
       if (!appKey) { statusEl.textContent = 'Missing required Flask setting: APP_KEY.'; return; }
       const base = new URL(goBaseUrl);
@@ -82,11 +85,22 @@
         if (message.event === 'connected') {
           socketId = message.socket_id;
           try {
-            const auth = await requestGrant();
-            socket.send(JSON.stringify({ action: 'subscribe', channel, auth }));
+            const authorization = await requestGrant();
+            socket.send(JSON.stringify({
+              action: 'subscribe',
+              channel,
+              auth: authorization.auth
+            }));
             appendMessage(`Authorized and subscribed to ${channel}`);
           } catch (error) { statusEl.textContent = error.message; }
           return;
+        }
+        if (message.event === 'subscription_succeeded' && message.data.presence) {
+          statusEl.textContent = `Subscribed: ${message.data.presence.count} unique member(s).`;
+        } else if (message.event === 'member_added') {
+          statusEl.textContent = `${message.data.user_info?.name || message.data.user_id} joined.`;
+        } else if (message.event === 'member_removed') {
+          statusEl.textContent = `${message.data.user_info?.name || message.data.user_id} left.`;
         }
         appendMessage(JSON.stringify(message, null, 2));
       };
