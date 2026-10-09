@@ -46,11 +46,14 @@ def trigger_event_on_go(app_id: str, secret: str, channel: str, event: str, payl
     return response.json()
 
 
-def authorize_private_channel_on_go(socket_id: str, channel: str) -> Dict[str, Any]:
+def authorize_private_channel_on_go(socket_id: str, channel: str, channel_data: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"socket_id": socket_id, "channel": channel}
+    if channel_data is not None:
+        payload["channel_data"] = channel_data
     response = requests.post(
         f"{GO_BASE_URL}/apps/{APP_ID}/private-channel-auth",
         headers={"Authorization": f"Bearer {APP_SECRET}"},
-        json={"socket_id": socket_id, "channel": channel},
+        json=payload,
         timeout=5,
     )
     response.raise_for_status()
@@ -134,13 +137,15 @@ def register_user():
         return jsonify({"error": "username and a password of at least 8 characters are required."}), 400
     try:
         with sqlite3.connect(USER_DB_PATH) as connection:
-            connection.execute(
+            cursor = connection.execute(
                 "INSERT INTO users (username, password_hash) VALUES (?, ?)",
                 (username, generate_password_hash(password)),
             )
+            user_id = cursor.lastrowid
     except sqlite3.IntegrityError:
         return jsonify({"error": "username already exists."}), 409
     session["username"] = username
+    session["user_id"] = user_id
     return jsonify({"username": username}), 201
 
 
@@ -150,16 +155,17 @@ def login_user():
     username = (data.get("username") or "").strip()
     password = data.get("password") or ""
     with sqlite3.connect(USER_DB_PATH) as connection:
-        row = connection.execute("SELECT password_hash FROM users WHERE username = ?", (username,)).fetchone()
-    if not row or not check_password_hash(row[0], password):
+        row = connection.execute("SELECT id, password_hash FROM users WHERE username = ?", (username,)).fetchone()
+    if not row or not check_password_hash(row[1], password):
         return jsonify({"error": "invalid username or password."}), 401
     session["username"] = username
+    session["user_id"] = row[0]
     return jsonify({"username": username}), 200
 
 
 @app.route("/api/logout", methods=["POST"])
 def logout_user():
-    session.pop("username", None)
+    session.clear()
     return jsonify({"status": "logged out"}), 200
 
 
@@ -175,11 +181,23 @@ def private_channel_auth():
     data = request.get_json(silent=True) or {}
     socket_id = (data.get("socket_id") or "").strip()
     channel = (data.get("channel") or "").strip()
-    if not socket_id or not channel.startswith("private-"):
-        return jsonify({"error": "socket_id and a private-* channel are required."}), 400
+    is_private = channel.startswith("private-")
+    is_presence = channel.startswith("presence-")
+    if not socket_id or (not is_private and not is_presence):
+        return jsonify({"error": "socket_id and a private-* or presence-* channel are required."}), 400
+
+    channel_data = None
+    if is_presence:
+        user_id = session.get("user_id")
+        if user_id is None:
+            return jsonify({"error": "logged-in user identity is missing."}), 401
+        channel_data = {
+            "user_id": str(user_id),
+            "user_info": {"name": session["username"]},
+        }
 
     try:
-        result = authorize_private_channel_on_go(socket_id, channel)
+        result = authorize_private_channel_on_go(socket_id, channel, channel_data)
     except requests.HTTPError as exc:
         return jsonify({"error": exc.response.text}), exc.response.status_code
     except requests.RequestException as exc:
