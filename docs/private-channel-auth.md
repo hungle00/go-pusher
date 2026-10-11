@@ -1,17 +1,12 @@
-# Private-Channel Authentication
+# Private and Presence Channel Authentication
 
-**Status: implemented baseline.** The Go server now issues short-lived JWT
-grants for private channels, and the Flask example provides user registration,
-login sessions, login gating, and a CSRF-protected authorization route.
-Presence channels, production user permissions, and grant revocation are still
-future work.
+The Go server now issues short-lived JWT
+grants for private and presence channels. Presence grants bind a server-derived
+user identity to the app, socket, and channel. Production user permissions and
+grant revocation are still future work.
 
-This guide explains the implementation. It remains intentionally separate from
-presence channels: first make private subscriptions reliable, then extend the
-same authorization flow for presence.
-
-For the details of credential generation, JWT signing, and verification, see
-[credentials-and-signing.md](credentials-and-signing.md).
+This guide explains both flows. Presence builds on private-channel
+authorization, then adds member identity and membership events.
 
 ## The Basic Idea
 
@@ -20,8 +15,10 @@ allowed to read a channel. For a private channel, the customer's backend must
 check the signed-in user's permission before Go accepts the subscription.
 
 The browser never receives the app secret. Flask checks the user session and
-asks Go to issue a short-lived authorization. Go validates Flask's app secret
-using its stored hash, then signs a grant using a separate Go-only signing key.
+asks Go to issue a short-lived authorization. For presence, Flask derives
+`user_id` and `user_info` from its authenticated session/database. Go validates
+Flask's app secret using its stored hash, then signs the identity into a grant
+using a separate Go-only signing key.
 
 ```mermaid
 sequenceDiagram
@@ -30,11 +27,11 @@ sequenceDiagram
     participant Go as Go Pusher server
     Browser->>Go: WebSocket connect with APP_ID and APP_KEY
     Go-->>Browser: socket_id for this connection
-    Browser->>Flask: Request access to private channel + socket_id
-    Flask->>Flask: Check login and user's channel permission
-    Flask->>Go: POST auth request with APP_SECRET + socket_id + channel
-    Go->>Go: Verify APP_SECRET hash and issue signed, expiring grant
-    Go-->>Flask: Signed authorization
+    Browser->>Flask: Request access to private/presence channel + socket_id
+    Flask->>Flask: Check login and derive user identity from session
+    Flask->>Go: POST auth request with APP_SECRET + socket + identity
+    Go->>Go: Verify APP_SECRET hash and sign grant claims
+    Go-->>Flask: Signed authorization + channel_data
     Flask-->>Browser: Signed authorization (not APP_SECRET)
     Browser->>Go: Subscribe with channel + authorization
     Go->>Go: Verify signature, expiry, app, socket, and channel
@@ -45,24 +42,34 @@ The signed grant is not itself proof that the user logged in. Go trusts Flask to
 make that decision because Flask authenticated with the app secret. Never put
 that secret in browser JavaScript, HTML, or a URL.
 
-## Why Go Signs the Grant
+## How the Grant Is Verified
 
-A common design is for Flask to HMAC-sign the channel authorization with the app
-secret. Go would then need the original secret to verify that signature, but a
-one-way hash cannot be used to recreate an HMAC key.
+When a browser sends:
 
-Instead, use two separate checks:
+```json
+{
+  "action": "subscribe",
+  "channel": "presence-room-1",
+  "auth": "signed-grant"
+}
+```
 
-1. **Flask to Go:** Flask sends the app secret over HTTPS. Go checks it with
-   `Registry.HasSecret`, which compares its hash with the submitted secret.
-2. **Go to browser:** Go signs a short-lived grant with a different key stored
-   only in Go's environment, for example `CHANNEL_AUTH_SIGNING_KEY`.
+Go performs these checks:
 
-This lets Go keep using a one-way app-secret hash for verification. The signing
-key must be a long, randomly generated value and must never be sent to Flask or
-the browser.
+1. The channel starts with `private-` or `presence-`.
+2. The JWT uses the expected `HS256` algorithm.
+3. The signature matches `CHANNEL_AUTH_SIGNING_KEY`.
+4. The issuer is `go-pusher`.
+5. The token is not expired.
+6. `app_id` matches the WebSocket app.
+7. `socket_id` matches the current connection's socket ID.
+8. `channel` matches the requested channel exactly.
+9. For `presence-*`, the signed claim has a non-empty `channel_data.user_id`.
 
-## Proposed Request Flow
+Only after all checks pass does the hub add the client to the channel. A failed
+check produces a subscription error and does not add the client.
+
+## Private-Channel Flow
 
 ### 1. Open a WebSocket
 
@@ -146,6 +153,56 @@ must expire or be revoked while a socket stays open, Go will also need a lease,
 renewal, or explicit revocation mechanism. A grant can also be replayed for the
 same socket and channel until it expires. Preventing even that requires a
 one-time grant ID and server-side tracking of consumed IDs.
+
+## Presence-Channel Flow
+
+Presence channels use the same authorization endpoint and grant signing key,
+but their names begin with `presence-`. The Flask demo derives a stable user ID
+from the users table and builds public display metadata from the logged-in
+session. It does not accept identity fields from the browser request.
+
+The server-to-server auth request includes:
+
+```json
+{
+  "socket_id": "socket-unique-id",
+  "channel": "presence-room-1",
+  "channel_data": {
+    "user_id": "42",
+    "user_info": {"name": "Ada"}
+  }
+}
+```
+
+The Go response contains both the signed grant and `channel_data`:
+
+```json
+{
+  "auth": "signed-jwt-grant",
+  "channel_data": {
+    "user_id": "42",
+    "user_info": {"name": "Ada"}
+  }
+}
+```
+
+The `channel_data` identity is also inside the JWT. The browser sends the grant
+in its WebSocket subscribe command; Go reads identity from the verified claims,
+not from a separate, browser-provided field. `user_info` is limited to 4 KiB of
+valid JSON. Put only information that other channel members may see in it.
+
+After verification, the hub performs membership changes in its event loop:
+
+- The joining socket receives `subscription_succeeded` with a snapshot of
+  unique members, including itself.
+- Existing members receive `member_added` only when this `user_id` was not
+  already present.
+- If a user has multiple sockets, disconnecting one socket does not remove the
+  member. Remaining members receive `member_removed` only after that user's
+  final socket disconnects.
+
+The snapshot count represents unique user IDs, while the general dashboard's
+subscriber count continues to represent WebSocket connections.
 
 ## Configuration
 
@@ -247,11 +304,25 @@ The browser may receive the signed grant, but it must not receive `APP_SECRET`.
 Inspect the rendered page or browser network responses and confirm the literal
 secret is absent.
 
-### 6. Test rejection cases
+### 6. Test a presence channel
+
+Open `/private`, set the channel to `presence-room-1`, then connect. The current
+user should receive `subscription_succeeded` with `presence.count` and a member
+snapshot. Open a second browser profile, register or log in as another user, and
+connect to the same channel; the first client should receive `member_added` and
+both clients should see two members. Disconnect the second user's final socket;
+the first client should receive `member_removed` and return to one member.
+
+Log in as the same user in two browser profiles as an additional check. That
+should create two sockets but only one presence member. Closing one profile
+should not emit `member_removed`; closing the final profile should.
+
+### 7. Test rejection cases
 
 Check each result:
 
-- Log out and try `private-orders`: Flask should return `401 login is required`.
+- Log out and try a `private-*` or `presence-*` channel: Flask should return
+  `401 login is required`.
 - Remove `X-CSRF-Token` in a request: Flask should return `403 invalid CSRF token`.
 - Use a public channel without login: it should still work.
 - Stop Go or use an invalid Go URL: Flask should return a connection error,
@@ -263,34 +334,3 @@ Check each result:
 - Wait more than 30 seconds before using a grant: Go should reject the expired
   authorization.
 
-### 7. Run automated checks
-
-From the repository root:
-
-```sh
-go test ./...
-python3 -m py_compile clients/flask_app/app.py
-git diff --check
-```
-
-The Go auth tests cover valid, expired, and wrong-channel grants. The Flask
-flow can be tested with its Flask test client using a temporary `USER_DB_PATH`.
-
-### What is not tested yet
-
-The demo currently lets any logged-in user request any `private-*` channel.
-Production code should add an application-specific permission check between
-login and the request to Go. Presence channels, user member data, revocation,
-and one-time grant IDs are also not implemented yet.
-
-## Terms
-
-- **App key:** Public identifier used by a browser to connect to the correct
-  app. It is not user authentication.
-- **App secret:** Private credential Flask uses to prove it is the registered
-  app's backend when requesting authorization from Go.
-- **Socket ID:** Random identifier for one active WebSocket connection.
-- **Grant:** Short-lived, Go-signed authorization for one app, socket, and
-  private channel.
-- **Presence channel:** A private channel that additionally shares authorized
-  member identity and tracks who is present. It builds on the same grant checks.

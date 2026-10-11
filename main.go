@@ -55,7 +55,7 @@ func main() {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid app key"})
 			return
 		}
-		hub.ServeAppHTTP(appID, c.Writer, c.Request, func(socketID, channel, token string) error {
+		hub.ServeAppHTTP(appID, c.Writer, c.Request, func(socketID, channel, token string) (*ws.PresenceMember, error) {
 			return handler.AuthorizeSubscription(appID, socketID, channel, token)
 		})
 	})

@@ -7,20 +7,24 @@ import (
 	"strings"
 
 	"ws-demo/internal/app"
+	"ws-demo/internal/auth"
 	"ws-demo/internal/ws"
 
 	"github.com/gin-gonic/gin"
 )
 
-const maxEventRequestBytes = 1 << 20
+const (
+	maxEventRequestBytes       = 1 << 20
+	maxChannelAuthRequestBytes = 8 << 10
+)
 
 type Publisher interface {
 	Publish(appID, channel, event string, data json.RawMessage)
 }
 
 type GrantIssuer interface {
-	Issue(appID, socketID, channel string) (string, error)
-	Verify(token, appID, socketID, channel string) error
+	Issue(appID, socketID, channel string, channelData *auth.ChannelData) (string, error)
+	Verify(token, appID, socketID, channel string) (*auth.GrantClaims, error)
 }
 
 type SocketChecker interface {
@@ -118,8 +122,9 @@ func (h *Handler) PublishEvent(c *gin.Context) {
 }
 
 type privateAuthPayload struct {
-	SocketID string `json:"socket_id" binding:"required"`
-	Channel  string `json:"channel" binding:"required"`
+	SocketID    string            `json:"socket_id" binding:"required"`
+	Channel     string            `json:"channel" binding:"required"`
+	ChannelData *auth.ChannelData `json:"channel_data"`
 }
 
 func (h *Handler) AuthorizePrivateChannel(c *gin.Context) {
@@ -128,8 +133,30 @@ func (h *Handler) AuthorizePrivateChannel(c *gin.Context) {
 		return
 	}
 	var request privateAuthPayload
-	if err := c.ShouldBindJSON(&request); err != nil || !strings.HasPrefix(request.Channel, "private-") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "socket_id and a private-* channel are required"})
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxChannelAuthRequestBytes)
+	if err := c.ShouldBindJSON(&request); err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "Authorization request is too large"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid authorization request"})
+		return
+	}
+	isPrivate := strings.HasPrefix(request.Channel, "private-")
+	isPresence := strings.HasPrefix(request.Channel, "presence-")
+	if !isPrivate && !isPresence {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "private-* or presence-* channel with matching channel_data is required"})
+		return
+	}
+	if isPresence {
+		if err := request.ChannelData.Validate(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		request.ChannelData.UserID = strings.TrimSpace(request.ChannelData.UserID)
+	} else if request.ChannelData != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "private channels cannot include presence channel_data"})
 		return
 	}
 
@@ -149,17 +176,28 @@ func (h *Handler) AuthorizePrivateChannel(c *gin.Context) {
 		return
 	}
 
-	grant, err := h.grants.Issue(appID, request.SocketID, request.Channel)
+	grant, err := h.grants.Issue(appID, request.SocketID, request.Channel, request.ChannelData)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not create channel authorization"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"auth": grant})
+	response := gin.H{"auth": grant}
+	if isPresence {
+		response["channel_data"] = request.ChannelData
+	}
+	c.JSON(http.StatusOK, response)
 }
 
-func (h *Handler) AuthorizeSubscription(appID, socketID, channel, token string) error {
+func (h *Handler) AuthorizeSubscription(appID, socketID, channel, token string) (*ws.PresenceMember, error) {
 	if h.grants == nil {
-		return errors.New("private-channel authentication is not configured")
+		return nil, errors.New("private-channel authentication is not configured")
 	}
-	return h.grants.Verify(token, appID, socketID, channel)
+	claims, err := h.grants.Verify(token, appID, socketID, channel)
+	if err != nil {
+		return nil, err
+	}
+	if claims.ChannelData == nil {
+		return nil, nil
+	}
+	return &ws.PresenceMember{UserID: claims.ChannelData.UserID, UserInfo: claims.ChannelData.UserInfo}, nil
 }
