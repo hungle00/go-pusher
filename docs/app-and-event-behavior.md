@@ -126,10 +126,3 @@ system.
 | More than 20 WebSocket frames arrive within one second | Go closes that connection with code `1008` and reason `command rate limit exceeded`. |
 | Client disconnects or network drops | Its subscriptions are removed; it must reconnect and subscribe again. There is no automatic retry or event replay in the example. |
 
-## Scope of the demo
-
-The Flask pages are examples, not a production authorization policy. The
-private-channel flow demonstrates login, CSRF protection, and a Go-issued
-grant, but does not associate channel permissions with individual users.
-Delivery is live and best-effort: there is no durable event history, replay, or
-exactly-once delivery guarantee.
